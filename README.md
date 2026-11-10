@@ -256,7 +256,25 @@ node "$base\tools\hvigor\bin\hvigorw.js" --mode module -p product=default assemb
 
 ## 八、可扩展方向
 
-- 水印样式自定义（颜色、位置、Logo 图片水印）
+- Logo / 图片水印
+- 水印角度旋转、多种预设保存
 - 拍照后大图预览、删除、分享
 - 批量导出到相册
 - 使用 `SaveButton` 安全控件保存，免权限弹窗
+
+---
+
+## 九、许可证
+
+本项目基于 **Apache License 2.0** 开源，详见 [LICENSE](LICENSE)。
+
+```
+Copyright 2026 flounxisicoal
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
+
