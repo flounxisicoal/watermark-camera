@@ -21,6 +21,10 @@
       "value": "需要将带水印的照片保存到相册"
     },
     {
+      "name": "reason_location",
+      "value": "用于在照片水印中显示拍摄地点"
+    },
+    {
       "name": "app_name",
       "value": "水印相机"
     },

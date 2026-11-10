@@ -42,6 +42,8 @@ export interface WatermarkOptions {
   x: number;
   /** 自由位置 Y：0~1（相对预览高度） */
   y: number;
+  /** 地理位置文案（可为空，如“湖南省长沙市岳麓区…”） */
+  location: string;
 }
 
 /**
@@ -87,7 +89,7 @@ export class WatermarkUtil {
 
     // 3. 计算排版
     const margin: number = Math.round(widthVp * 0.03);
-    const fontSize: number = Math.max(12, Math.round(widthVp * 0.035 * options.fontScale));
+    let fontSize: number = Math.max(12, Math.round(widthVp * 0.035 * options.fontScale));
     let col: number = options.position % 3;
     let row: number = Math.floor(options.position / 3);
     let x: number = 0;
@@ -122,7 +124,14 @@ export class WatermarkUtil {
     const textColor: string = options.color;
     const bold: string = options.style === WatermarkStyle.ACCENT ? 'bold ' : '';
     ctx.font = `${bold}${fontSize}vp sans-serif`;
-    const textWidth: number = ctx.measureText(content).width;
+    let textWidth: number = ctx.measureText(content).width;
+    // 文字过长（如带完整地址）时自动缩小字号，避免超出画面
+    const maxTextWidth: number = widthVp * 0.9;
+    while (textWidth > maxTextWidth && fontSize > 10) {
+      fontSize -= 1;
+      ctx.font = `${bold}${fontSize}vp sans-serif`;
+      textWidth = ctx.measureText(content).width;
+    }
     const padding: number = Math.round(fontSize * 0.45);
     const alpha: number = Math.min(1, Math.max(0.2, options.opacity));
     ctx.globalAlpha = alpha;
@@ -185,11 +194,19 @@ export class WatermarkUtil {
   }
 
   private static buildText(options: WatermarkOptions): string {
+    const parts: Array<string> = [];
     const label: string = options.text.trim();
     if (label !== '') {
-      return options.showTimestamp ? `${label}  ${options.timestamp}` : label;
+      parts.push(label);
     }
-    return options.showTimestamp ? options.timestamp : '';
+    if (options.showTimestamp) {
+      parts.push(options.timestamp);
+    }
+    const location: string = options.location.trim();
+    if (location !== '') {
+      parts.push(location);
+    }
+    return parts.join('  ');
   }
 
   /** 判断颜色是否为深色（用于自动选择对比色） */

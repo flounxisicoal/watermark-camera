@@ -4,6 +4,7 @@ import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { geoLocationManager } from '@kit.LocationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WatermarkStyle, WatermarkOptions, WatermarkUtil } from '../utils/WatermarkUtil';
 
@@ -71,6 +72,10 @@ struct CameraPage {
   @State useCustomPos: boolean = false;
   @State posX: number = 0.5;
   @State posY: number = 0.5;
+  // 地理位置
+  @State locationText: string = '';
+  @State showLocation: boolean = true;
+  @State locating: boolean = false;
   private dragStartX: number = 0.5;
   private dragStartY: number = 0.5;
   private readonly styleNames: Array<string> = ['经典', '简约', '描边', '强调'];
@@ -146,6 +151,7 @@ struct CameraPage {
 
       photoOutput.on('photoAvailable', this.photoListener);
       this.initZoomAndFocus(session);
+      this.refreshLocation();
       this.statusText = '相机已就绪';
       hilog.info(0x0000, TAG, 'Camera started, position: %{public}d', this.currentPosition);
     } catch (error) {
@@ -255,7 +261,12 @@ struct CameraPage {
 
   private async ensureCameraPermission(context: common.UIAbilityContext): Promise<boolean> {
     const atManager = abilityAccessCtrl.createAtManager();
-    const permissions: Array<Permissions> = ['ohos.permission.CAMERA'];
+    // 相机 + 位置（精确定位需同时申请模糊定位）
+    const permissions: Array<Permissions> = [
+      'ohos.permission.CAMERA',
+      'ohos.permission.APPROXIMATELY_LOCATION',
+      'ohos.permission.LOCATION'
+    ];
     try {
       const result = await atManager.requestPermissionsFromUser(context, permissions);
       return result.authResults.length > 0 && result.authResults[0] === 0;
@@ -264,6 +275,84 @@ struct CameraPage {
       hilog.error(0x0000, TAG, 'request permission failed: %{public}s', JSON.stringify(err));
       return false;
     }
+  }
+
+  // ==================== 地理位置 ====================
+
+  /** 获取当前位置并解析地址；失败时回退到最近位置/经纬度 */
+  private async refreshLocation(): Promise<void> {
+    if (this.locating) {
+      return;
+    }
+    this.locating = true;
+    try {
+      let latitude: number = 0;
+      let longitude: number = 0;
+      try {
+        const current: geoLocationManager.Location = await geoLocationManager.getCurrentLocation({
+          priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+          scenario: geoLocationManager.LocationRequestScenario.UNSET,
+          timeoutMs: 6000
+        });
+        latitude = current.latitude;
+        longitude = current.longitude;
+      } catch (error) {
+        // 兜底：使用最近一次定位结果
+        const last: geoLocationManager.Location = geoLocationManager.getLastLocation();
+        latitude = last.latitude;
+        longitude = last.longitude;
+      }
+      this.locationText = await this.describeLocation(latitude, longitude);
+      hilog.info(0x0000, TAG, 'location resolved: %{public}s', this.locationText);
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.warn(0x0000, TAG, 'refreshLocation failed: %{public}d', err.code);
+      this.locationText = '';
+    } finally {
+      this.locating = false;
+    }
+  }
+
+  /** 经纬度反查地址，失败时返回坐标文本 */
+  private async describeLocation(latitude: number, longitude: number): Promise<string> {
+    try {
+      if (geoLocationManager.isGeocoderAvailable()) {
+        const addresses: Array<geoLocationManager.GeoAddress> =
+          await geoLocationManager.getAddressesFromLocation({
+            latitude: latitude,
+            longitude: longitude,
+            maxItems: 1,
+            locale: 'zh-CN'
+          });
+        if (addresses.length > 0) {
+          const address: geoLocationManager.GeoAddress = addresses[0];
+          const place: string = address.placeName !== undefined ? address.placeName : '';
+          if (place !== '') {
+            return place;
+          }
+          const parts: Array<string> = [];
+          const fields: Array<string | undefined> = [
+            address.administrativeArea,
+            address.locality,
+            address.subLocality,
+            address.roadName,
+            address.premises
+          ];
+          for (const field of fields) {
+            if (field !== undefined && field !== '' && parts.indexOf(field) < 0) {
+              parts.push(field);
+            }
+          }
+          if (parts.length > 0) {
+            return parts.join(' ');
+          }
+        }
+      }
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.warn(0x0000, TAG, 'reverse geocode failed: %{public}d', err.code);
+    }
+    return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
   }
 
   // ==================== 水印拖动定位 ====================
@@ -320,7 +409,8 @@ struct CameraPage {
       color: this.colors[this.colorIndex],
       useCustomPosition: this.useCustomPos,
       x: this.posX,
-      y: this.posY
+      y: this.posY,
+      location: this.showLocation ? this.locationText : ''
     };
     return options;
   }
@@ -519,6 +609,39 @@ struct CameraPage {
             })
         }
         .width('100%')
+
+        Row() {
+          Text('显示地理位置')
+            .fontSize(13)
+            .fontColor($r('app.color.text_primary'))
+          Blank()
+          Toggle({ type: ToggleType.Switch, isOn: this.showLocation })
+            .onChange((isOn: boolean) => {
+              this.showLocation = isOn;
+              if (isOn && this.locationText === '') {
+                this.refreshLocation();
+              }
+            })
+        }
+        .width('100%')
+
+        if (this.showLocation) {
+          Row({ space: 8 }) {
+            Text(this.locating ? '定位中…' : (this.locationText !== '' ? this.locationText : '未获取到位置'))
+              .fontSize(11)
+              .fontColor($r('app.color.text_secondary'))
+              .layoutWeight(1)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text('重新定位')
+              .fontSize(11)
+              .fontColor($r('app.color.primary'))
+              .onClick(() => {
+                this.refreshLocation();
+              })
+          }
+          .width('100%')
+        }
 
         Text('样式')
           .fontSize(13)
