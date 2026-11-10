@@ -1,0 +1,72 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "水印相机模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "拍照并添加时间戳水印，同时保留无水印原片"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "水印相机"
+    },
+    {
+      "name": "reason_camera",
+      "value": "需要使用相机拍摄照片"
+    },
+    {
+      "name": "reason_save_album",
+      "value": "需要将带水印的照片保存到相册"
+    },
+    {
+      "name": "app_name",
+      "value": "水印相机"
+    },
+    {
+      "name": "take_photo",
+      "value": "拍照"
+    },
+    {
+      "name": "switch_camera",
+      "value": "切换"
+    },
+    {
+      "name": "save_album",
+      "value": "相册"
+    },
+    {
+      "name": "status_ready",
+      "value": "相机已就绪"
+    },
+    {
+      "name": "status_init",
+      "value": "正在初始化相机…"
+    },
+    {
+      "name": "status_capture",
+      "value": "正在拍照并保存…"
+    },
+    {
+      "name": "status_saved",
+      "value": "已保存：原片 + 水印照片"
+    },
+    {
+      "name": "status_failed",
+      "value": "操作失败，请检查相机权限"
+    },
+    {
+      "name": "permission_denied",
+      "value": "缺少相机权限，无法拍照"
+    },
+    {
+      "name": "original_photo",
+      "value": "原片（无水印）"
+    },
+    {
+      "name": "watermark_photo",
+      "value": "水印照片"
+    }
+  ]
+}
