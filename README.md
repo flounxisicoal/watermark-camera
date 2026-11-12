@@ -3,6 +3,7 @@
 一个 HarmonyOS NEXT 拍照应用（ArkTS / Stage 模型）：
 
 - 📷 **拍照**：CameraKit 相机预览与拍摄
+- ⚡ **连拍加速**：拍完立即释放相机，水印在后台队列处理（最多排队 3 张），实测连拍 3 张共 3.5s
 - 🎯 **自动对焦**：默认连续自动对焦，点击预览任意位置即可对焦
 - 🔍 **缩放**：底部滑杆 + 双指捏合（0.5x 起，最高至设备支持倍率）
 - 🎨 **水印自定义**：文字、4 种样式、9 宫格位置、字号、颜色、透明度
@@ -10,6 +11,7 @@
 - 🖱 **自由拖动位置**：预览上的虚线水印框可直接拖到任意位置
 - ⏱ **时间戳水印**：把当前时间绘制进照片像素（保存后不可去除）
 - 🖼 **保留无水印原片**：每次拍照同时保存两张照片
+- 🎞 **系统相机照片导入**：设置中开启后，可从相册导入系统相机拍的成片（含 HDR / AI 自动优化）并加水印
 - 💾 **保存到相册**：可把带水印照片写入系统图库（可选）
 
 > 本工程已在 DevEco Studio 26.0（内置 HarmonyOS SDK API 26）下**实际编译通过**，
@@ -38,6 +40,8 @@
 | 无水印原片 | 右下角干净，无任何水印 |
 | 时间戳水印 | 右下角半透明底 + 白色时间戳，已烘进像素 |
 | 保存到相册 | 授权 `WRITE_IMAGEVIDEO` 后保存成功 |
+| 连拍加速 | 连续快拍 3 张共 **3.5s**，保存 6 个文件（原片 + 水印各 3 张） |
+| 系统相机导入 | 从相册选择系统相机成片（1968461 字节）→ 原片 + 水印片均保存成功 |
 
 效果截图：`docs/` 目录。
 
@@ -204,6 +208,9 @@ node "$base\tools\hvigor\bin\hvigorw.js" --mode module -p product=default assemb
 8. 页面底部显示两张缩略图与时间戳，可核对。
 9. 点击 **相册** 可把水印照片写入系统图库（首次申请 `WRITE_IMAGEVIDEO`）。
 10. 点击 **切换** 在前后置之间切换（切换后缩放回到 1.0x 并重新连续对焦）。
+11. **导入系统相机成片**：在水印设置中打开 **系统相机照片导入（原生优化）**，
+    之后点 **拍照** 会打开系统相册选择器：选一张系统相机拍的照片 → **完成**，
+    App 会保存无水印原片并生成带水印照片。系统相机自身的 HDR / AI 优化会保留在成片中。
 
 ---
 
@@ -242,6 +249,33 @@ node "$base\tools\hvigor\bin\hvigorw.js" --mode module -p product=default assemb
 
 > 修改水印设置后，**下一次拍照**生效；已保存的照片不会回改。
 
+### 连拍为什么快？
+
+`onCapture()` 只做一件事：调 `PhotoOutput.capture()`。相机回调 `photoAvailable` 里
+立刻把 JPEG 字节 `slice()` 复制出来并 `release()` 相机，随后入队；
+水印绘制与写文件交给 `processQueue()` 串行在后台做。
+
+因此点击快门到能拍下一张之间，不再等待解码 / 画布 / 编码 / 落盘，
+实测连拍 3 张共 3.5s，产出 6 个文件。队列上限 3 张，超过时提示“处理中”。
+
+### 系统相机照片导入的实现与限制
+
+`captureWithNativeCamera()` 用 `photoAccessHelper.PhotoViewPicker.select()` 打开系统相册选择器，
+选择器会为返回的 `photoUris` 授予**临时读取权限**，因此可以直接：
+
+```ts
+const src = fs.openSync(photoUri, fs.OpenMode.READ_ONLY);
+const stat = fs.statSync(src.fd);      // 按 fd 取大小
+```
+
+读出原始 JPEG 字节（实测 1968461 字节），走与普通拍照完全相同的
+`processPhotoBuffer()`，原片 + 水印片一并保存。
+
+注意：`cameraPicker.pick()` 直接调用系统相机时虽然能拍，但返回的 `resultUri`
+是**公开媒体路径**，应用没有读取授权；而 `ohos.permission.READ_IMAGEVIDEO`
+属于受限权限，第三方应用声明会导致 HAP 安装失败（`grant request permissions failed`）。
+所以这里改用“相册选择器导入”的路径，既拿到系统相机的 HDR / AI 成片，又不需要受限权限。
+
 ### 权限
 
 | 权限 | 用途 | 授予方式 |
@@ -268,6 +302,8 @@ node "$base\tools\hvigor\bin\hvigorw.js" --mode module -p product=default assemb
 | 缩放不生效 | 用 `getZoomRatioRange()` 确认设备支持范围；定焦摄像头可能只有 1.0x |
 | 编译报 SDK 不匹配 | 确认 SDK ≥ API 13（`compatibleSdkVersion`，本机 DevEco 已写为 `26.0.0`） |
 | 水印大小不合适 | 调整 `WatermarkUtil` 中 `fontSize = widthVp * 0.035` |
+| 系统相机导入后预览卡住 | 导入流程会 `releaseCamera()` 再 `initCamera()`，若卡住检查是否在后台被系统回收 |
+| 不要声明 `READ_IMAGEVIDEO` | 该权限为受限权限，第三方应用声明会导致安装失败（`grant request permissions failed`） |
 
 ---
 

@@ -17,6 +17,19 @@ function formatTimestamp(date: Date): string {
     `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+/** 待处理照片（已取出 JPEG 字节，等待加水印保存） */
+class QueuedPhoto {
+  buffer: ArrayBuffer;
+  timestamp: string;
+  baseName: string;
+
+  constructor(buffer: ArrayBuffer, timestamp: string, baseName: string) {
+    this.buffer = buffer;
+    this.timestamp = timestamp;
+    this.baseName = baseName;
+  }
+}
+
 /**
  * 水印相机主页面
  *
@@ -76,6 +89,10 @@ struct CameraPage {
   @State locationText: string = '';
   @State showLocation: boolean = true;
   @State locating: boolean = false;
+  @State useNativeCamera: boolean = false;
+  // 连拍处理队列
+  private pendingPhotos: Array<QueuedPhoto> = [];
+  private processingPhoto: boolean = false;
   private dragStartX: number = 0.5;
   private dragStartY: number = 0.5;
   private readonly styleNames: Array<string> = ['经典', '简约', '描边', '强调'];
@@ -92,7 +109,7 @@ struct CameraPage {
       this.isBusy = false;
       return;
     }
-    this.handlePhoto(photo);
+    this.enqueuePhoto(photo);
   };
 
   aboutToDisappear(): void {
@@ -418,16 +435,24 @@ struct CameraPage {
   // ==================== 拍照 ====================
 
   private onCapture(): void {
+    if (this.isBusy) {
+      return;
+    }
+    if (this.pendingPhotos.length >= 3) {
+      this.statusText = '处理中，请稍候…';
+      return;
+    }
+    if (this.useNativeCamera) {
+      this.captureWithNativeCamera();
+      return;
+    }
     const output: camera.PhotoOutput | undefined = this.photoOutput;
     if (!output) {
       this.statusText = '相机尚未就绪';
       return;
     }
-    if (this.isBusy) {
-      return;
-    }
     this.isBusy = true;
-    this.statusText = '正在拍照并保存…';
+    this.statusText = '正在拍照…';
 
     const settings: camera.PhotoCaptureSetting = {
       quality: camera.QualityLevel.QUALITY_LEVEL_HIGH,
@@ -445,35 +470,70 @@ struct CameraPage {
   }
 
   /**
-   * 处理拍照结果：保存无水印原片 + 带时间戳水印照片
+   * 拍照回调：立刻取出 JPEG 字节并释放相机，随后排队处理，
+   * 从而让用户可以马上拍下一张。
    */
-  private async handlePhoto(photo: camera.Photo): Promise<void> {
+  private async enqueuePhoto(photo: camera.Photo): Promise<void> {
+    try {
+      const component: image.Component = await photo.main.getComponent(image.ComponentType.JPEG);
+      // 复制一份字节，避免 photo 释放后数据失效
+      const copy: Uint8Array = new Uint8Array(component.byteBuffer).slice();
+      const now: Date = new Date();
+      const queued: QueuedPhoto = new QueuedPhoto(
+        copy.buffer as ArrayBuffer,
+        formatTimestamp(now),
+        now.getTime().toString()
+      );
+      this.pendingPhotos.push(queued);
+      this.statusText = '已拍摄，正在保存…';
+      this.processQueue();
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.error(0x0000, TAG, 'enqueuePhoto failed: %{public}d', err.code);
+      this.statusText = '拍照失败';
+    } finally {
+      await photo.release();
+      this.isBusy = false;
+    }
+  }
+
+  /** 顺序处理队列，避免并发编码占满内存 */
+  private async processQueue(): Promise<void> {
+    if (this.processingPhoto) {
+      return;
+    }
+    this.processingPhoto = true;
+    try {
+      while (this.pendingPhotos.length > 0) {
+        const item: QueuedPhoto | undefined = this.pendingPhotos.shift();
+        if (!item) {
+          break;
+        }
+        await this.processPhotoBuffer(item.buffer, item.timestamp, item.baseName);
+      }
+    } finally {
+      this.processingPhoto = false;
+    }
+  }
+
+  /** 保存无水印原片 + 生成水印照片 */
+  private async processPhotoBuffer(jpegBuffer: ArrayBuffer, timestamp: string, baseName: string): Promise<void> {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     try {
-      const mainImage: image.Image = photo.main;
-      const component: image.Component = await mainImage.getComponent(image.ComponentType.JPEG);
-      const jpegBuffer: ArrayBuffer = component.byteBuffer;
-
-      const now: Date = new Date();
-      const timestamp: string = formatTimestamp(now);
-      const baseName: string = now.getTime().toString();
-
-      // 1. 保存无水印原片（直接写拍照得到的 JPEG 字节）
-      const originalBytes: Uint8Array = new Uint8Array(jpegBuffer);
+      // 1. 原片直接写盘（不经过任何绘制）
       const originalPath: string = WatermarkUtil.saveBytesToSandbox(
-        context, originalBytes, 'original', `${baseName}_original.jpg`
+        context, new Uint8Array(jpegBuffer), 'original', `${baseName}_original.jpg`
       );
 
-      // 2. 解码 -> 绘制时间戳 -> 编码
+      // 2. 解码 -> 绘制水印
       const imageSource: image.ImageSource = image.createImageSource(jpegBuffer);
       const pixelMap: image.PixelMap = await imageSource.createPixelMap({ editable: true });
       const watermarkedPixelMap: image.PixelMap =
         WatermarkUtil.addTimestampWatermark(pixelMap, this.buildWatermarkOptions(timestamp));
-      const watermarkedBuffer: ArrayBuffer = await WatermarkUtil.packJpeg(watermarkedPixelMap);
 
-      // 3. 保存水印照片
-      const watermarkPath: string = WatermarkUtil.saveBytesToSandbox(
-        context, new Uint8Array(watermarkedBuffer), 'watermark', `${baseName}_watermark.jpg`
+      // 3. 编码时直接写入文件，省去中间缓冲区
+      const watermarkPath: string = await WatermarkUtil.saveWatermarkedToSandbox(
+        context, watermarkedPixelMap, 'watermark', `${baseName}_watermark.jpg`
       );
 
       // 4. 更新界面
@@ -490,12 +550,82 @@ struct CameraPage {
       await imageSource.release();
     } catch (error) {
       const err = error as BusinessError;
-      hilog.error(0x0000, TAG, 'handlePhoto failed: code=%{public}d message=%{public}s',
+      hilog.error(0x0000, TAG, 'processPhoto failed: code=%{public}d message=%{public}s',
         err.code, err.message);
       this.statusText = '保存失败';
+    }
+  }
+
+  // ==================== 系统相机（原生优化） ====================
+
+  /**
+   * 调用系统相机拍照：由系统相机完成 HDR / AI 等自动优化后返回照片，
+   * 再导入本 App 保存原片并加水印。
+   */
+  private async captureWithNativeCamera(): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.isBusy = true;
+    this.statusText = '请选择系统相机拍摄的照片…';
+    await this.releaseCamera();
+    try {
+      // 通过系统相册选择器导入照片：选择器会给应用临时读取授权，
+      // 从而拿到系统相机（HDR / AI 自动优化）拍出的成片。
+      const photoPicker: photoAccessHelper.PhotoViewPicker = new photoAccessHelper.PhotoViewPicker();
+      const selectResult: photoAccessHelper.PhotoSelectResult = await photoPicker.select({
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE,
+        maxSelectNumber: 1
+      });
+      hilog.info(0x0000, TAG, 'picker returned uris=%{public}d', selectResult.photoUris.length);
+      if (selectResult.photoUris.length === 0) {
+        this.statusText = '已取消导入';
+        return;
+      }
+      const photoUri: string = selectResult.photoUris[0];
+      hilog.info(0x0000, TAG, 'importing uri=%{public}s', photoUri);
+
+      // 方式1：fs 直接按 URI 读取（选择器已临时授权）
+      let buffer: ArrayBuffer | null = null;
+      try {
+        const src = fs.openSync(photoUri, fs.OpenMode.READ_ONLY);
+        const stat = fs.statSync(src.fd);
+        const buf = new ArrayBuffer(stat.size);
+        fs.readSync(src.fd, buf);
+        fs.closeSync(src);
+        if (stat.size > 0) {
+          buffer = buf;
+          hilog.info(0x0000, TAG, 'import via fs ok, size=%{public}d', stat.size);
+        }
+      } catch (e) {
+        const err = e as BusinessError;
+        hilog.warn(0x0000, TAG, 'import via fs failed: %{public}d %{public}s', err.code, err.message);
+      }
+
+      // 方式2：ImageSource 解码后重新编码
+      if (buffer === null) {
+        const imageSource: image.ImageSource = image.createImageSource(photoUri);
+        const pixelMap: image.PixelMap = await imageSource.createPixelMap({ editable: true });
+        const packer: image.ImagePacker = image.createImagePacker();
+        buffer = await packer.packToData(pixelMap, { format: 'image/jpeg', quality: 100 });
+        await packer.release();
+        await pixelMap.release();
+        await imageSource.release();
+        hilog.info(0x0000, TAG, 'import via imageSource ok');
+      }
+
+      if (buffer === null || buffer.byteLength === 0) {
+        this.statusText = '导入失败：无法读取照片';
+        return;
+      }
+      const now: Date = new Date();
+      await this.processPhotoBuffer(buffer, formatTimestamp(now), now.getTime().toString());
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.error(0x0000, TAG, 'native camera failed: %{public}d message=%{public}s',
+        err.code, err.message);
+      this.statusText = '导入照片失败';
     } finally {
       this.isBusy = false;
-      await photo.release();
+      await this.initCamera();
     }
   }
 
@@ -641,6 +771,25 @@ struct CameraPage {
               })
           }
           .width('100%')
+        }
+
+        Row() {
+          Text('系统相机照片导入（原生优化）')
+            .fontSize(13)
+            .fontColor($r('app.color.text_primary'))
+          Blank()
+          Toggle({ type: ToggleType.Switch, isOn: this.useNativeCamera })
+            .onChange((isOn: boolean) => {
+              this.useNativeCamera = isOn;
+            })
+        }
+        .width('100%')
+
+        if (this.useNativeCamera) {
+          Text('开启后点「拍照」将从相册选择系统相机拍摄的照片（含 HDR / AI 优化）导入并加水印')
+            .fontSize(11)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
         }
 
         Text('样式')

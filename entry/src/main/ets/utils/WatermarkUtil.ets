@@ -222,19 +222,32 @@ export class WatermarkUtil {
   }
 
   /**
-   * 将 PixelMap 编码为 JPEG 字节流
+   * 将水印 PixelMap 直接编码并写入沙箱文件（packToFile 免去中间 ArrayBuffer 拷贝，速度更快）
    */
-  static async packJpeg(pixelMap: image.PixelMap): Promise<ArrayBuffer> {
+  static async saveWatermarkedToSandbox(
+    context: common.UIAbilityContext,
+    pixelMap: image.PixelMap,
+    subDir: string,
+    fileName: string
+  ): Promise<string> {
+    const dir: string = `${context.filesDir}/photos/${subDir}`;
+    if (!fs.accessSync(dir)) {
+      fs.mkdirSync(dir, true);
+    }
+    const filePath: string = `${dir}/${fileName}`;
+    const file = fs.openSync(filePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
     const packer: image.ImagePacker = image.createImagePacker();
     try {
       const options: image.PackingOption = {
         format: 'image/jpeg',
-        quality: 95
+        quality: 90
       };
-      return await packer.packToData(pixelMap, options);
+      await packer.packToFile(pixelMap, file.fd, options);
     } finally {
       await packer.release();
+      fs.closeSync(file);
     }
+    return filePath;
   }
 
   /**
